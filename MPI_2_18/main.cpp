@@ -156,9 +156,9 @@ int main(int argc, char* argv[]) {
 	dataSize = n;
 	bufferSize = dataSize;
 	int data_slice = m / (thread_count - 1);
-	printf_s("data_slice=%d\n", data_slice);
+	//printf_s("data_slice=%d\n", data_slice);
 	int delta_data = m - (thread_count - 1)*data_slice;
-	printf_s("delta_data=%d\n", delta_data);
+	//printf_s("delta_data=%d\n", delta_data);
 
 	Abuff = new int[bufferSize];
 	Bbuff = new int[bufferSize];
@@ -174,7 +174,10 @@ int main(int argc, char* argv[]) {
 			PrintMatrixVector(Bmatrix, n, l);
 			printf_s("\n");
 		}
+		time1 = MPI_Wtime();
 		Cmatrix = ConsistentMatrixMultiplication(Amatrix, Bmatrix, m, n, l);
+		time2 = MPI_Wtime();
+		delta_time_consistent = time2 - time1;
 		time1 = MPI_Wtime();
 		int *temp_start_Amatrix = Amatrix; //рассылка строк
 		int count = 0;
@@ -211,7 +214,9 @@ int main(int argc, char* argv[]) {
 		}
 
 
-		PrintMatrixVector(result_matrix, m, l);
+		//PrintMatrixVector(result_matrix, m, l);
+		time2 = MPI_Wtime();
+		delta_time_parallel = time2 - time1;
 		if (CheckResult(result_matrix, Cmatrix, m, l))
 		{
 			printf_s("Correct.\n");
@@ -220,7 +225,9 @@ int main(int argc, char* argv[]) {
 		{
 			printf_s("Error.\n");
 		}
-
+		printf_s("time_parallel = %f\n", delta_time_parallel);
+		printf_s("time_consistent = %f\n", delta_time_consistent);
+		printf_s("Acceleration(parallel):  %f\n", (delta_time_consistent / delta_time_parallel));
 	}
 	if(rank != 0) {
 		for (int count = 0; count < data_slice; count++) {
