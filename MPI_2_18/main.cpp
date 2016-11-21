@@ -135,27 +135,32 @@ int main(int argc, char* argv[]) {
 	}
 	MPI_Type_create_struct(count, blocklens, indices, oldtypes, &StructTypeColomn);
 	MPI_Type_commit(&StructTypeColomn);
- 
+
 	//размеры буффера для данных
-	int data_slice = m / (thread_count - 1);
-	int delta_data = m - (thread_count - 1)*data_slice;
-	int* Elements_in_thread = new int[thread_count];
-	for (i = 1; i < thread_count - 1; i++)
-	{
-		Elements_in_thread[i] = data_slice;
-	}
-	Elements_in_thread[0] = 0;
-	Elements_in_thread[thread_count - 1] = data_slice + delta_data;
-	dataSize = n;
-	bufferSize = dataSize;
-	if (rank != 0)
-	{
-		bufferSize = dataSize*Elements_in_thread[rank];
-		result_Multiplication = (int*)malloc(Elements_in_thread[rank] * l * sizeof(int));
-	}
-	Abuff = new int[bufferSize];
-	Bbuff = new int[dataSize];
+	int data_slice_row = m / (thread_count - 1);
+	int delta_data_row = m - (thread_count - 1)*data_slice_row;
+	int data_slice_colomn = l / (thread_count - 1);
+	int delta_data_colomn = l - (thread_count - 1)*data_slice_colomn;
 	
+	dataSize = n;
+	//bufferSize = dataSize*data_slice_row;
+	result_Multiplication = (int*)malloc((thread_count-1)*data_slice_colomn * data_slice_row * sizeof(int));
+	Abuff = new int[dataSize*data_slice_row];
+	Bbuff = new int[dataSize*data_slice_colomn];
+	
+	//структура для нескольких столбцов
+	int count_colomn = data_slice_colomn;
+	MPI_Datatype StructTypeNColomn;
+	int *blocklens_colomn = new int[data_slice_colomn];
+	MPI_Aint *indices_colomn = new MPI_Aint[data_slice_colomn];
+	MPI_Datatype* oldtypes_colomn = new MPI_Datatype[data_slice_colomn];
+	for (i = 0; i<data_slice_colomn; i++) {
+		blocklens_colomn[i] = 1;
+		indices_colomn[i] = i*sizeof(int);
+		oldtypes_colomn[i] = StructTypeColomn;
+	}
+	MPI_Type_create_struct(count_colomn, blocklens_colomn, indices_colomn, oldtypes_colomn, &StructTypeNColomn);
+	MPI_Type_commit(&StructTypeNColomn);
 
 	if (rank == 0) {
 		Amatrix = CreateAndFillMatrixVector(m, n);
@@ -164,46 +169,96 @@ int main(int argc, char* argv[]) {
 
 		delta_time_consistent = StartConsistentMatrixMultiplication(Amatrix, Bmatrix, &Cmatrix, m, n, l);
 
-
 		time1 = MPI_Wtime();
 
 		int *temp_start_Amatrix = Amatrix;
 		for (i = 1; i < thread_count; i++) {
-			MPI_Send(temp_start_Amatrix, n*Elements_in_thread[i], MPI_INT, i, 0, MPI_COMM_WORLD);
-			temp_start_Amatrix = temp_start_Amatrix + n*Elements_in_thread[i];
-			MPI_Send(Bmatrix, 1, StructTypeColomn, i, 0, MPI_COMM_WORLD);
+			MPI_Send(temp_start_Amatrix, n*data_slice_row, MPI_INT, i, 0, MPI_COMM_WORLD);
+			temp_start_Amatrix = temp_start_Amatrix + n*data_slice_row;
+			MPI_Send(Bmatrix, 1, StructTypeNColomn, i, 0, MPI_COMM_WORLD);
 		}
-		for (i = 1; i < l; i++) {
+		for (i = 1; i < thread_count-1; i++) {
 			for (j = 1; j < thread_count; j++) {
-				MPI_Send(Bmatrix + i, 1, StructTypeColomn, j, 0, MPI_COMM_WORLD);
+				MPI_Send(Bmatrix + i*data_slice_colomn, 1, StructTypeNColomn, j, 0, MPI_COMM_WORLD);
 			}
 		}
 
-		int* temp_resukt_matrix = result_matrix;
+		int* temp_result_matrix = result_matrix;
 		for (i = 1; i < thread_count; i++) {
-			MPI_Recv(temp_resukt_matrix, Elements_in_thread[i] * l, MPI_INT, i, 0, MPI_COMM_WORLD, &status);
-			temp_resukt_matrix = temp_resukt_matrix + Elements_in_thread[i] * l;
+			for (j = 0; j < data_slice_row; j++)
+			{
+				MPI_Recv(temp_result_matrix, l-delta_data_colomn, MPI_INT, i, 0, MPI_COMM_WORLD, &status);
+				//PrintVector(temp_result_matrix, l - delta_data_colomn);
+				temp_result_matrix = temp_result_matrix + l;
+			}	
 		}
+		//обрабоать остатки
+		int res = 0;
+		//PrintMatrixVector(result_matrix, m, l);
+		if (delta_data_colomn!=0)
+		{
+			for (i = 0; i < m; i++) {
+				for (k = l - delta_data_colomn; k < l; k++) {
+					res = 0;
+					for (j = 0; j < n; j++) {
+						res += Amatrix[n*i + j] * Bmatrix[k + j*l];
+					}
 
+					result_matrix[k + l*i] = res;
+				}
+			}
+		}
+		//PrintMatrixVector(result_matrix, m, l);
+		if (delta_data_row!=0)
+		{
+			for (i = m - delta_data_row; i < m; i++) {
+				for (j = 0; j < l; j++) {
+					res = 0;
+					for (k = 0; k < n; k++) {
+						res += Amatrix[n*i + k] * Bmatrix[j + k*l];
+					}
+					//printf_s("res = %d\n", res);
+					result_matrix[i*l + j] = res;
+				}
+			}
+		}
+		//printf_s("res: \n");
+		//PrintMatrixVector(result_matrix, m, l);
+		//printf_s("l - delta_data_colomn = %d, l = %d, delta_data_colomn = %d\n", l - delta_data_colomn, l, delta_data_colomn);
 		time2 = MPI_Wtime();
 		delta_time_parallel = time2 - time1;
 	}
 
 	if(rank != 0) {
-			MPI_Recv(Abuff, bufferSize, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
-			MPI_Recv(Bbuff, n, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-			for (i = 0; i < Elements_in_thread[rank]; i++)
+		MPI_Recv(Abuff, dataSize*data_slice_row, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+		//PrintVector(Abuff, dataSize*data_slice_row);
+		//PrintVector(result_Multiplication, (thread_count - 1)*data_slice_colomn * data_slice_row);
+		for (k = 0; k < thread_count-1; k++)
 			{
-				result_Multiplication[0+l*i] = ScalarMultiplication(Abuff + n*i, Bbuff, n);
+				MPI_Recv(Bbuff, n*data_slice_colomn, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+					for (i = 0; i < data_slice_row; i++) {
+						for (j = 0; j < data_slice_colomn; j++) {
+							result_Multiplication[k*data_slice_colomn + i*(l - delta_data_colomn) + j] = ScalarMultiplication(Abuff + n*i, Bbuff + j*n, n);
+							/*if (rank == 1)
+							{
+								printf_s("A: \n");
+								PrintVector(Abuff + n*i, n);
+								printf_s("B: \n");
+								PrintVector(Bbuff + j*n, n);
+								printf_s("res = %d: in %d\n", result_Multiplication[k*data_slice_colomn + i*(l - 1) + j], k*data_slice_colomn + i*(l - 1) + j);
+							}*/
+						}
+					}
 			}
-
-			for (i = 1; i < l; i++) {
-				MPI_Recv(Bbuff, n, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-				for (j = 0; j < Elements_in_thread[rank]; j++) {
-					result_Multiplication[i + l*j] = ScalarMultiplication(Abuff + n*j, Bbuff, n);
-				}
-			}
-			MPI_Send(result_Multiplication, Elements_in_thread[rank] * l, MPI_INT, 0, 0, MPI_COMM_WORLD);
+		//PrintVector(result_Multiplication, (thread_count - 1)*data_slice_colomn * data_slice_row);
+		int* temp = result_Multiplication;
+		for (i = 0; i < data_slice_row; i++)
+		{
+			MPI_Send(temp, l-delta_data_colomn, MPI_INT, 0, 0, MPI_COMM_WORLD);
+			temp = temp + (l - delta_data_colomn);
+		}
+		//PrintVector(result_Multiplication, (thread_count - 1)*data_slice_colomn * data_slice_row);
+		//MPI_Send(result_Multiplication, (thread_count - 1)*data_slice_colomn * data_slice_row, MPI_INT, 0, 0, MPI_COMM_WORLD);
 	}
 
 	if (rank == 0)
@@ -215,9 +270,9 @@ int main(int argc, char* argv[]) {
 			printf_s("Matrix B:\n");
 			PrintMatrixVector(Bmatrix, n, l);
 			printf_s("\n");
-			printf_s("Matrix C = A * B:\n");
-			PrintMatrixVector(Cmatrix, m, l);
-			printf_s("\n");
+			//printf_s("Matrix C = A * B:\n");
+			//PrintMatrixVector(Cmatrix, m, l);
+			//printf_s("\n");
 		}
 		if (CheckResult(result_matrix, Cmatrix, m, l)) {
 			printf_s("Correct.\n");
@@ -225,12 +280,13 @@ int main(int argc, char* argv[]) {
 		else {
 			printf_s("Error.\n");
 		}
-		printf_s("time_parallel = %f\n", delta_time_parallel);
+		printf_s("\ntime_parallel = %f\n", delta_time_parallel);
 		printf_s("time_consistent = %f\n", delta_time_consistent);
 		printf_s("Acceleration(parallel):  %f\n", (delta_time_consistent / delta_time_parallel));
 	}
 
 	MPI_Type_free(&StructTypeColomn);
+	MPI_Type_free(&StructTypeNColomn);
 	MPI_Finalize();
 	DeleteMatrix(Amatrix);
 	DeleteMatrix(Bmatrix);
